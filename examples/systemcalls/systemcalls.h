@@ -12,7 +12,7 @@
 bool do_system(const char *command);
 
 // helper
-bool fork_execute_command(char *command[], int output_fd);
+bool fork_execute_command(char *command[], const char *outputfile);
 
 bool do_exec(int count, ...);
 

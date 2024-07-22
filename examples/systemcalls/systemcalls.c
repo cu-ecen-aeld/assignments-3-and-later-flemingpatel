@@ -42,37 +42,45 @@ bool do_system(const char *cmd) {
 
 /**
 * @param *command[] - defines the command and its arguments
-* @param output_fd - fd to redirect stdout and stderr
+* @param outputfile - outputfile to redirect stdout and stderr
 * @return true if the command @param *command[] were executed successfully
 *   using the execv() call, false if an error occurred, either in invocation of the
 *   fork, waitpid, or execv() command, or if a non-zero return value was returned
 *   by the command issued in @param arguments with the specified arguments.
 */
 
-bool fork_execute_command(char *command[], int output_fd) {
+bool fork_execute_command(char *command[], const char *outputfile) {
     pid_t pid = fork();
     if (pid < 0) {
-        perror("fork");
+        perror("Error: fork");
         return false;
     } else if (pid == 0) {
-        if (output_fd >= 0) {
-            if (dup2(output_fd, STDOUT_FILENO) < 0 || dup2(output_fd, STDERR_FILENO) < 0) {
-                perror("dup2");
-                close(output_fd);
+        // child process
+        // decoupling fd close from parent process
+        if (outputfile && outputfile[0] != '\0') {
+            int fd = open(outputfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+            if (fd < 0) {
+                perror("Error: open");
                 _exit(EXIT_FAILURE);
             }
-            close(output_fd);
+            if (dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) {
+                perror("Error: dup2");
+                close(fd);
+                _exit(EXIT_FAILURE);
+            }
+            close(fd);
         }
         execv(command[0], command);
 
         // if we see this, execv must have failed
-        perror("execv");
+        perror("Error: execv");
         _exit(EXIT_FAILURE);
     } else {
+        // parent process
         int status;
         while (waitpid(pid, &status, 0) == -1) {
             if (errno != EINTR) {
-                perror("waitpid");
+                perror("Error: waitpid");
                 return false;
             }
         }
@@ -127,8 +135,7 @@ bool do_exec(int count, ...) {
 */
 
     va_end(args);
-
-    return fork_execute_command(command, -1);
+    return fork_execute_command(command, NULL);
 }
 
 /**
@@ -146,9 +153,6 @@ bool do_exec_redirect(const char *outputfile, int count, ...) {
         char *);
     }
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
 
 /*
  * TODO
@@ -159,14 +163,5 @@ bool do_exec_redirect(const char *outputfile, int count, ...) {
 */
 
     va_end(args);
-
-    int fd = open(outputfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) {
-        perror("open");
-        return false;
-    }
-
-    bool result = fork_execute_command(command, fd);
-    close(fd);
-    return result;
+    return fork_execute_command(command, outputfile);
 }
