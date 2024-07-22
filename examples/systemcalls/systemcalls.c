@@ -1,5 +1,6 @@
 #include "systemcalls.h"
 
+
 /**
  * @param cmd the command to execute with system()
  * @return true if the command in @param cmd was executed
@@ -7,8 +8,7 @@
  *   either in invocation of the system() call, or if a non-zero return
  *   value was returned by the command issued in @param cmd.
 */
-bool do_system(const char *cmd)
-{
+bool do_system(const char *cmd) {
 
 /*
  * TODO  add your code here
@@ -17,7 +17,78 @@ bool do_system(const char *cmd)
  *   or false() if it returned a failure
 */
 
+    int ret;
+
+    if (cmd == NULL) {
+        fprintf(stderr, "Error: null command; check arguments\n");
+        return false;
+    }
+
+    ret = system(cmd);
+
+    if (ret == -1) {
+        fprintf(stderr, "Error: system() call failed with error: %s\n", strerror(errno));
+        return false;
+    } else if (WIFEXITED(ret) && WEXITSTATUS(ret) != 0) {
+        fprintf(stderr, "Error: Command '%s' failed with exit status %d\n", cmd, WEXITSTATUS(ret));
+        return false;
+    } else if (WIFSIGNALED(ret)) {
+        fprintf(stderr, "Error: Command '%s' was terminated by signal %d\n", cmd, WTERMSIG(ret));
+        return false;
+    }
+
     return true;
+}
+
+/**
+* @param *command[] - defines the command and its arguments
+* @param output_fd - fd to redirect stdout and stderr
+* @return true if the command @param *command[] were executed successfully
+*   using the execv() call, false if an error occurred, either in invocation of the
+*   fork, waitpid, or execv() command, or if a non-zero return value was returned
+*   by the command issued in @param arguments with the specified arguments.
+*/
+
+bool fork_execute_command(char *command[], int output_fd) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        perror("fork");
+        return false;
+    } else if (pid == 0) {
+        if (output_fd >= 0) {
+            if (dup2(output_fd, STDOUT_FILENO) < 0 || dup2(output_fd, STDERR_FILENO) < 0) {
+                perror("dup2");
+                close(output_fd);
+                _exit(EXIT_FAILURE);
+            }
+            close(output_fd);
+        }
+        execv(command[0], command);
+
+        // if we see this, execv must have failed
+        perror("execv");
+        _exit(EXIT_FAILURE);
+    } else {
+        int status;
+        while (waitpid(pid, &status, 0) == -1) {
+            if (errno != EINTR) {
+                perror("waitpid");
+                return false;
+            }
+        }
+        if (WIFEXITED(status)) {
+            int exit_status = WEXITSTATUS(status);
+            if (exit_status == 0) {
+                return true;
+            } else {
+                fprintf(stderr, "Error: Command '%s' failed with exit status %d\n", command[0], exit_status);
+                return false;
+            }
+        } else {
+            fprintf(stderr, "Error: child process terminated unexpectedly\n");
+            return false;
+        }
+    }
 }
 
 /**
@@ -34,20 +105,16 @@ bool do_system(const char *cmd)
 *   by the command issued in @param arguments with the specified arguments.
 */
 
-bool do_exec(int count, ...)
-{
+bool do_exec(int count, ...) {
     va_list args;
     va_start(args, count);
-    char * command[count+1];
+    char *command[count + 1];
     int i;
-    for(i=0; i<count; i++)
-    {
-        command[i] = va_arg(args, char *);
+    for (i = 0; i < count; i++) {
+        command[i] = va_arg(args,
+        char *);
     }
     command[count] = NULL;
-    // this line is to avoid a compile warning before your implementation is complete
-    // and may be removed
-    command[count] = command[count];
 
 /*
  * TODO:
@@ -61,7 +128,7 @@ bool do_exec(int count, ...)
 
     va_end(args);
 
-    return true;
+    return fork_execute_command(command, -1);
 }
 
 /**
@@ -69,21 +136,19 @@ bool do_exec(int count, ...)
 *   This file will be closed at completion of the function call.
 * All other parameters, see do_exec above
 */
-bool do_exec_redirect(const char *outputfile, int count, ...)
-{
+bool do_exec_redirect(const char *outputfile, int count, ...) {
     va_list args;
     va_start(args, count);
-    char * command[count+1];
+    char *command[count + 1];
     int i;
-    for(i=0; i<count; i++)
-    {
-        command[i] = va_arg(args, char *);
+    for (i = 0; i < count; i++) {
+        command[i] = va_arg(args,
+        char *);
     }
     command[count] = NULL;
     // this line is to avoid a compile warning before your implementation is complete
     // and may be removed
     command[count] = command[count];
-
 
 /*
  * TODO
@@ -95,5 +160,13 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
 
     va_end(args);
 
-    return true;
+    int fd = open(outputfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) {
+        perror("open");
+        return false;
+    }
+
+    bool result = fork_execute_command(command, fd);
+    close(fd);
+    return result;
 }
