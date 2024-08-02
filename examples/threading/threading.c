@@ -14,7 +14,6 @@ void *threadfunc(void *thread_param)
 
     if (pthread_mutex_lock(thread_data->mutex) != 0) {
         ERROR_LOG("Failed to lock mutex");
-        thread_data->thread_complete_success = false;
         return thread_param;
     }
 
@@ -22,7 +21,6 @@ void *threadfunc(void *thread_param)
 
     if (pthread_mutex_unlock(thread_data->mutex) != 0) {
         ERROR_LOG("Failed to unlock mutex");
-        thread_data->thread_complete_success = false;
         return thread_param;
     }
 
@@ -40,9 +38,9 @@ start_thread_obtaining_mutex(pthread_t *thread, pthread_mutex_t *mutex, int wait
         return false;
     }
 
+    thread_data->mutex = mutex;
     thread_data->wait_to_obtain_ms = wait_to_obtain_ms;
     thread_data->wait_to_release_ms = wait_to_release_ms;
-    thread_data->mutex = mutex;
     thread_data->thread_complete_success = false;
 
     if (pthread_create(thread, NULL, threadfunc, thread_data) != 0) {
