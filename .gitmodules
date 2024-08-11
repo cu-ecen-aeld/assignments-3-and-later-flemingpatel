@@ -1,3 +1,6 @@
 [submodule "assignment-autotest"]
 	path = assignment-autotest
 	url = https://github.com/cu-ecen-aeld/assignment-autotest.git
+[submodule "server/ctwisted"]
+	path = server/ctwisted
+	url = git@github.com:flemingpatel/ctwisted.git
