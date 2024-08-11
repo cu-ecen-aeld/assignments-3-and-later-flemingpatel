@@ -1,6 +1,6 @@
 //
 // Created by Fleming on 2024-08-11.
-// Note: I am using an experimental framework that I created on weekends.
+// Note: I am using an experimental framework that I created on weekend.
 // Happy hacking...
 //
 
@@ -247,5 +247,7 @@ int main(int argc, char *argv[]) {
     reactor->run(reactor);
     closelog();
 
+    // evil stuff but for async its complex
+    sleep(1);
     return EXIT_SUCCESS;
 }
