@@ -17,15 +17,23 @@ DESC="AESD Socket Server"
 PID_FILE="/var/run/$NAME.pid"
 SCRIPTNAME=$(basename "$0")
 
-# Load the LSB functions library
-. /lib/lsb/init-functions
+log_daemon_msg() {
+    echo "$1: $2"
+}
+
+log_end_msg() {
+    if [ $1 -eq 0 ]; then
+        echo " [ OK ]"
+    else
+        echo " [ FAIL ]"
+    fi
+}
 
 start() {
     log_daemon_msg "Starting $DESC" "$NAME"
     if [ -f "$PID_FILE" ]; then
         if kill -0 $(cat "$PID_FILE") > /dev/null 2>&1; then
-            log_progress_msg "(already running)"
-            log_end_msg 0
+            echo "$DESC is already running."
             return 0
         else
             echo "Warning: PID file exists but process is not running. Removing stale PID file."
@@ -54,13 +62,19 @@ stop() {
             log_end_msg 1
         fi
     else
-        log_daemon_msg "$DESC is not running (PID file not found)"
+        echo "$DESC is not running (PID file not found)"
         log_end_msg 0
     fi
 }
 
 status() {
-    status_of_proc -p "$PID_FILE" "$DAEMON" "$NAME" && exit 0 || exit $?
+    if [ -f "$PID_FILE" ] && kill -0 $(cat "$PID_FILE") > /dev/null 2>&1; then
+        echo "$DESC is running."
+        return 0
+    else
+        echo "$DESC is not running."
+        return 1
+    fi
 }
 
 restart() {
