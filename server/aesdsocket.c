@@ -11,6 +11,7 @@
 
 
 #define FILE_PATH "/var/tmp/aesdsocketdata"
+#define PID_FILE "/var/run/aesdsocket.pid"
 
 
 // Global pointer to the reactor and factory
@@ -142,6 +143,16 @@ ProtocolFactory *create_aesd_protocol_factory() {
     return (ProtocolFactory *) factory;
 }
 
+void write_pid() {
+    FILE *pid_file = fopen(PID_FILE, "w");
+    if (pid_file) {
+        fprintf(pid_file, "%d\n", getpid());
+        fclose(pid_file);
+    } else {
+        syslog(LOG_ERR, "failed to write %s: %s", PID_FILE, strerror(errno));
+    }
+}
+
 
 int main(int argc, char *argv[]) {
     int daemonize = 0;
@@ -233,6 +244,8 @@ int main(int argc, char *argv[]) {
         dup2(null_fd, STDIN_FILENO);
         dup2(null_fd, STDOUT_FILENO);
         dup2(null_fd, STDERR_FILENO);
+
+        write_pid();
     }
 
     // Start listening on port 9000
