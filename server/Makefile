@@ -13,6 +13,10 @@ OBJ := $(SRC:.c=.o)
 # Cross-compile variable (optional)
 CROSS_COMPILE ?=
 
+# args
+USE_AESD_CHAR_DEVICE ?= 1
+CFLAGS += -DUSE_AESD_CHAR_DEVICE=$(USE_AESD_CHAR_DEVICE)
+
 # Default target
 .PHONY: all clean
 

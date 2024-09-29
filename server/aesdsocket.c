@@ -16,7 +16,12 @@
 #include <errno.h>
 
 
+#if USE_AESD_CHAR_DEVICE
+#define FILE_PATH "/dev/aesdchar"
+#else
 #define FILE_PATH "/var/tmp/aesdsocketdata"
+#endif
+
 #define PID_FILE "/var/run/aesdsocket.pid"
 #define PORT 9000
 #define BUF_SIZE 1024
@@ -411,6 +416,7 @@ int main(int argc, char *argv[])
         write_pid();
     }
 
+#if !(USE_AESD_CHAR_DEVICE)
     pthread_t timestamp_tid;
     if (pthread_create(&timestamp_tid, NULL, timestamp_thread, NULL) != 0)
     {
@@ -418,6 +424,7 @@ int main(int argc, char *argv[])
         return EXIT_FAILURE;
     }
     add_thread(timestamp_tid);
+#endif
 
     int server_sock;
     struct sockaddr_in server_addr, client_addr;
@@ -474,13 +481,22 @@ int main(int argc, char *argv[])
         add_thread(thread_id);
     }
 
+#if !(USE_AESD_CHAR_DEVICE)
     // cancel timer thread
     pthread_cond_signal(&timer_cond);
+#endif
+
     // clean up resources
     clean_up_threads();
     close(server_sock);
+
+#if !(USE_AESD_CHAR_DEVICE)
+    // remove out file
     remove_test_file();
+#endif
+
     syslog(LOG_INFO, "server exiting successfully");
     closelog();
+
     return EXIT_SUCCESS;
 }
