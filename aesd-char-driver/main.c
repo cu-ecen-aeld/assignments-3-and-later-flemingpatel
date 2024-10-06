@@ -11,13 +11,14 @@
  *
  */
 
+#include "aesd_ioctl.h"
 #include "aesdchar.h"
 
 
 int aesd_major = 0;// use dynamic major
 int aesd_minor = 0;
 
-MODULE_AUTHOR("flemingpatel"); /** TODO: fill in your name **/
+MODULE_AUTHOR("flemingpatel");
 MODULE_LICENSE("Dual BSD/GPL");
 
 struct aesd_dev aesd_device;
@@ -40,9 +41,7 @@ int aesd_open(struct inode *inode, struct file *filp)
 int aesd_release(struct inode *inode, struct file *filp)
 {
     PDEBUG("release");
-    /**
-     * TODO: handle release
-     */
+    // noop - since it is per-device
     return 0;
 }
 
@@ -177,12 +176,130 @@ out_unlock:
     return retval;
 }
 
+loff_t aesd_llseek(struct file *filp, loff_t offset, int whence)
+{
+    loff_t new_pos;
+    struct aesd_dev *dev = filp->private_data;
+    struct aesd_buffer_entry *entry;
+    loff_t total_size = 0;
+    int i;
+
+    PDEBUG("llseek");
+
+    if (mutex_lock_interruptible(&dev->lock))
+        return -ERESTARTSYS;
+
+    // calculate total size of data in the cb
+    AESD_CIRCULAR_BUFFER_FOREACH(entry, &dev->buffer, i)
+    {
+        total_size += entry->size;
+    }
+
+    switch (whence)
+    {
+        case SEEK_SET:
+            new_pos = offset;
+            break;
+        case SEEK_CUR:
+            new_pos = filp->f_pos + offset;
+            break;
+        case SEEK_END:
+            new_pos = total_size + offset;
+            break;
+        default:
+            mutex_unlock(&dev->lock);
+            return -EINVAL;
+    }
+
+    if (new_pos < 0 || new_pos > total_size)
+    {
+        mutex_unlock(&dev->lock);
+        return -EINVAL;
+    }
+
+    filp->f_pos = new_pos;
+    mutex_unlock(&dev->lock);
+    return new_pos;
+}
+
+long aesd_unlocked_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+    struct aesd_dev *dev = filp->private_data;
+    struct aesd_seekto seekto;
+    loff_t new_pos = 0;
+    int i;
+    struct aesd_buffer_entry *entry;
+    int count = 0;
+    int ret = 0;
+
+    PDEBUG("ioctl");
+
+    if (_IOC_TYPE(cmd) != AESD_IOC_MAGIC)
+        return -ENOTTY;
+
+    if (cmd != AESDCHAR_IOCSEEKTO)
+        return -ENOTTY;
+
+    if (copy_from_user(&seekto, (const void __user *) arg, sizeof(seekto)))
+        return -EFAULT;
+
+    if (mutex_lock_interruptible(&dev->lock))
+        return -ERESTARTSYS;
+
+    // calculate the new position based on write_cmd and write_cmd_offset
+    if (seekto.write_cmd >= AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED)
+    {
+        ret = -EINVAL;
+        goto out;
+    }
+
+    // calculate new_pos by iterating through the circular buffer
+    i = dev->buffer.out_offs;
+    new_pos = 0;
+
+    do
+    {
+        entry = &dev->buffer.entry[i];
+        if (entry->buffptr == NULL)
+            break;
+
+        if (count == seekto.write_cmd)
+        {
+            if (seekto.write_cmd_offset >= entry->size)
+            {
+                ret = -EINVAL;
+                goto out;
+            }
+            new_pos += seekto.write_cmd_offset;
+            break;
+        }
+
+        new_pos += entry->size;
+        i = (i + 1) % AESDCHAR_MAX_WRITE_OPERATIONS_SUPPORTED;
+        count++;
+    } while (i != dev->buffer.out_offs);
+
+    if (count != seekto.write_cmd)
+    {
+        ret = -EINVAL;
+        goto out;
+    }
+
+    filp->f_pos = new_pos;
+
+out:
+    mutex_unlock(&dev->lock);
+    return ret;
+}
+
 struct file_operations aesd_fops = {
         .owner = THIS_MODULE,
-        .read = aesd_read,
-        .write = aesd_write,
         .open = aesd_open,
         .release = aesd_release,
+        .read = aesd_read,
+        .write = aesd_write,
+        .llseek = aesd_llseek,
+        .unlocked_ioctl = aesd_unlocked_ioctl
 };
 
 static int aesd_setup_cdev(struct aesd_dev *dev)
@@ -213,9 +330,6 @@ int aesd_init_module(void)
     }
     memset(&aesd_device, 0, sizeof(struct aesd_dev));
 
-    /**
-     * TODO: initialize the AESD specific portion of the device
-     */
     mutex_init(&aesd_device.lock);
     aesd_circular_buffer_init(&aesd_device.buffer);
     aesd_device.partial_buffer = NULL;
@@ -237,10 +351,6 @@ void aesd_cleanup_module(void)
     struct aesd_buffer_entry *entry;
 
     cdev_del(&aesd_device.cdev);
-
-    /**
-     * TODO: cleanup AESD specific portions here as necessary
-     */
 
     mutex_lock(&aesd_device.lock);
 

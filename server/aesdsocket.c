@@ -2,18 +2,20 @@
 // Created by Fleming on 2024-08-11.
 //
 
+#include "../aesd-char-driver/aesd_ioctl.h"
+
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <arpa/inet.h>
-#include <pthread.h>
-#include <stdatomic.h>
-#include <signal.h>
 #include <syslog.h>
-#include <fcntl.h>
 #include <time.h>
-#include <errno.h>
+#include <unistd.h>
 
 
 #if USE_AESD_CHAR_DEVICE
@@ -28,14 +30,13 @@
 #define INITIAL_BUFFER_SIZE 1024
 
 volatile sig_atomic_t keep_running = 1;
-pthread_mutex_t file_lock = PTHREAD_MUTEX_INITIALIZER; // mutex for file operations
+pthread_mutex_t file_lock = PTHREAD_MUTEX_INITIALIZER;// mutex for file operations
 
 
 /**
  * Dynamic buffer
  */
-typedef struct dynamic_buffer
-{
+typedef struct dynamic_buffer {
     char *data;
     size_t size;
     size_t capacity;
@@ -78,15 +79,14 @@ int message_complete(const dynamic_buffer_t *buffer)
 /**
  * thread list
  */
-typedef struct thread_node
-{
+typedef struct thread_node {
     pthread_t thread_id;
     struct thread_node *next;
 } thread_node_t;
 
 typedef struct
 {
-    _Atomic(thread_node_t*) head;
+    _Atomic(thread_node_t *) head;
 } thread_list_t;
 
 thread_list_t thread_list = {.head = NULL};
@@ -203,7 +203,7 @@ void write_timestamp()
         syslog(LOG_ERR, "failed to write timestamp to file %s: %m", FILE_PATH);
     }
 
-    fflush(file); // ensure data is written to disk
+    fflush(file);// ensure data is written to disk
     fclose(file);
 
     pthread_mutex_unlock(&file_lock);
@@ -259,45 +259,96 @@ void *handle_client(void *arg)
     char recv_buffer[BUF_SIZE];
     ssize_t bytes_received;
 
+    pthread_t self_id = pthread_self();
+
+    // open the device file at the start of the client session
+    pthread_mutex_lock(&file_lock);
+    int device_fd = open(FILE_PATH, O_RDWR);
+    if (device_fd == -1)
+    {
+        syslog(LOG_ERR, "failed to open %s: %m", FILE_PATH);
+        pthread_mutex_unlock(&file_lock);
+        goto error_cleanup;
+    }
+    pthread_mutex_unlock(&file_lock);
+
     while ((bytes_received = recv(client_sock, recv_buffer, BUF_SIZE, 0)) > 0)
     {
+        // check for the special IOCTL command format
+        if (strncmp(recv_buffer, "AESDCHAR_IOCSEEKTO:", 19) == 0)
+        {
+            unsigned int write_cmd, write_cmd_offset;
+            if (sscanf(recv_buffer + 19, "%u,%u", &write_cmd, &write_cmd_offset) == 2)
+            {
+                struct aesd_seekto seekto = {
+                        .write_cmd = write_cmd,
+                        .write_cmd_offset = write_cmd_offset};
+
+                pthread_mutex_lock(&file_lock);
+
+                // send ioctl to the driver using the same file descriptor
+                if (ioctl(device_fd, AESDCHAR_IOCSEEKTO, &seekto) == -1)
+                {
+                    syslog(LOG_ERR, "ioctl failed: %m");
+                    pthread_mutex_unlock(&file_lock);
+                    goto error_cleanup;
+                }
+
+                // read from the new seek position in the device and send to client
+                char file_buffer[BUF_SIZE];
+                ssize_t bytes_read;
+                while ((bytes_read = read(device_fd, file_buffer, sizeof(file_buffer))) > 0)
+                {
+                    ssize_t total_sent = 0;
+                    while (total_sent < bytes_read)
+                    {
+                        ssize_t bytes_sent = send(client_sock, file_buffer + total_sent, bytes_read - total_sent, 0);
+                        if (bytes_sent < 0)
+                        {
+                            syslog(LOG_ERR, "send failed: %m");
+                            pthread_mutex_unlock(&file_lock);
+                            goto error_cleanup;
+                        }
+                        total_sent += bytes_sent;
+                    }
+                }
+
+                pthread_mutex_unlock(&file_lock);
+                continue;// proceed to next iteration without writing the command to the device
+            } else
+            {
+                syslog(LOG_ERR, "invalid IOCTL command format received");
+                goto error_cleanup;
+            }
+        }
+
+        // append the received data to the dynamic buffer
         append_to_buffer(&buffer, recv_buffer, bytes_received);
 
+        // check if the message is complete
         if (message_complete(&buffer))
         {
             pthread_mutex_lock(&file_lock);
 
-            FILE *file = fopen(FILE_PATH, "a+");
-            if (file == NULL)
+            // seek to the end of the file before writing
+            lseek(device_fd, 0, SEEK_END);
+
+            // write the buffer content to the device
+            ssize_t bytes_written = write(device_fd, buffer.data, buffer.size);
+            if (bytes_written != buffer.size)
             {
-                syslog(LOG_ERR, "failed to open file %s: %m", FILE_PATH);
+                syslog(LOG_ERR, "failed to write data to device %s: %m", FILE_PATH);
                 pthread_mutex_unlock(&file_lock);
-                free_buffer(&buffer);
-                close(client_sock);
-                pthread_t self_id = pthread_self();
-                remove_thread(self_id);
-                return NULL;
+                goto error_cleanup;
             }
 
-            if (fwrite(buffer.data, 1, buffer.size, file) != buffer.size)
-            {
-                syslog(LOG_ERR, "failed to write data to file %s: %m", FILE_PATH);
-                fclose(file);
-                pthread_mutex_unlock(&file_lock);
-                free_buffer(&buffer);
-                close(client_sock);
-                pthread_t self_id = pthread_self();
-                remove_thread(self_id);
-                return NULL;
-            }
+            // seek to the beginning of the file before reading
+            lseek(device_fd, 0, SEEK_SET);
 
-            fflush(file); // Ensure data is written to disk
-            // sent the file content
+            // read the entire device content and send it to the client
             char file_buffer[BUF_SIZE];
             ssize_t bytes_read;
-            // rewind the file pointer to the beginning of the file
-            fseek(file, 0, SEEK_SET);
-            while ((bytes_read = fread(file_buffer, 1, sizeof(file_buffer), file)) > 0)
+            while ((bytes_read = read(device_fd, file_buffer, sizeof(file_buffer))) > 0)
             {
                 ssize_t total_sent = 0;
                 while (total_sent < bytes_read)
@@ -306,28 +357,47 @@ void *handle_client(void *arg)
                     if (bytes_sent < 0)
                     {
                         syslog(LOG_ERR, "send failed: %m");
-                        break;
+                        pthread_mutex_unlock(&file_lock);
+                        goto error_cleanup;
                     }
                     total_sent += bytes_sent;
                 }
             }
-            fclose(file);
+
+            // after reading, seek back to the end for future writes
+            lseek(device_fd, 0, SEEK_END);
+
             pthread_mutex_unlock(&file_lock);
+
+            // reset the buffer after processing
             buffer.size = 0;
         }
     }
 
     if (bytes_received == 0)
     {
-        syslog(LOG_INFO, "client %d disconnected gracefully", client_sock);
+        syslog(LOG_INFO, "Client %d disconnected gracefully", client_sock);
     } else if (bytes_received < 0)
     {
         syslog(LOG_ERR, "recv failed: %m");
     }
 
-    // clean up
+    // clean up resources
     free_buffer(&buffer);
+    pthread_mutex_lock(&file_lock);
+    close(device_fd);
+    pthread_mutex_unlock(&file_lock);
     close(client_sock);
+    return NULL;
+
+error_cleanup:
+    free_buffer(&buffer);
+    pthread_mutex_lock(&file_lock);
+    if (device_fd != -1)
+        close(device_fd);
+    pthread_mutex_unlock(&file_lock);
+    close(client_sock);
+    remove_thread(self_id);
     return NULL;
 }
 
